@@ -13,14 +13,20 @@
 //  Arduino D9 (SS TX) - BT RX through a voltage divider (5v to 3.3v)
 //
  
-#include <AltSoftSerial.h>
-AltSoftSerial BTserial; 
+//#include <AltSoftSerial.h>
+//AltSoftSerial BTserial; 
+#include <RedBot.h>
+#include <RedBotSoftwareSerial.h>
+RedBotSoftwareSerial BTserial;
+
+
 // https://www.pjrc.com/teensy/td_libs_AltSoftSerial.html
  
  
 char c=' ';
 boolean NL = true;
- 
+int i = 0;
+
 void setup() 
 {
     Serial.begin(9600);
@@ -40,7 +46,6 @@ void loop()
         c = BTserial.read();
         Serial.write(c);
     }
- 
  
     // Read from the Serial Monitor and send to the Bluetooth module
     if (Serial.available())
