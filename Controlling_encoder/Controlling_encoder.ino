@@ -13,33 +13,44 @@ RedBotSoftwareSerial ASSserial;
 const byte maxDataLength = 20;
 char BT_command[21] ;
 boolean newCommand = false;
+bool connected_to_gui = false;
+bool data_read = true;
 
 RedBotMotors motors;
-RedBotAccel accelerometer;
+RedBotAccel accel; // Accelerometer
 RedBotEncoder encoder = RedBotEncoder(A2, 10);  // initializes encoder on pins A2 and 10
 String direction;
 
-int data;  // variable for holding incoming data from PC to Arduino
-int motorSpeed = 200;
+int motorSpeed = 200; // Motorspeed, 0-255 (low-high)
 float rightSpeed = motorSpeed;
 float leftSpeed = motorSpeed;
 
-float lCount;
+// Timer variables
+unsigned long startMillis;  //some global variables available anywhere in the program
+unsigned long currentMillis;
+const unsigned long period = 2000; // Time between each consecutive transmission of data
+const unsigned long timeout = 30000; // Timeout for when the connection is assumed lost
+int average_constant = 10; // amount of samples used in the average
+
+float lCount; // number of rotations for each wheel
 float rCount;
-int countsPerRev = 192; // 4 pairs of N-S x 48:1 gearbox = 192 ticks per wheel rev
+// not used atm: int countsPerRev = 192; // 4 pairs of N-S x 48:1 gearbox = 192 ticks per wheel rev
 
 bool regulator = true;
-float Kp = 1;
+float Kp = 1; // P-controller parameter
+
+// Buzzer
+const int buzzerPin = 9;
 
 // Comment in if debug should be used
 //#define DEBUG
 
 #ifdef DEBUG
-  #define DEBUG_PRINTLN(String) Serial.println(String)
-  #define DEBUG_PRINT(String) Serial.print(String)
+#define DEBUG_PRINTLN(String) Serial.println(String)
+#define DEBUG_PRINT(String) Serial.print(String)
 #else
-  #define DEBUG_PRINT(String)
-  #define DEBUG_PRINTLN(String)
+#define DEBUG_PRINT(String)
+#define DEBUG_PRINTLN(String)
 #endif
 
 void setup(void)
@@ -47,10 +58,15 @@ void setup(void)
   Serial.begin(9600);
   ASSserial.begin(9600);
   DEBUG_PRINTLN("Ready for command!");
+
+  // INPUT_PULLUP defaults it to HIGH.
+  pinMode(buzzerPin, OUTPUT);  // configures the buzzerPin as an OUTPUT
+  startMillis = millis();
 }
 
 void loop(void)
 {
+
   recvWithStartEndMarkers();
   if (newCommand) {
     DEBUG_PRINTLN("New command");
@@ -61,6 +77,17 @@ void loop(void)
     controller();
   }
 
+  currentMillis = millis();  //get the current "time" (actually the number of milliseconds since the program started)
+  
+  if (currentMillis - startMillis >= period)  //test whether the period has elapsed
+  {
+    DEBUG_PRINTLN("Start transmission");
+    // Only send data if gui has sent confirmation of connection
+    if (connected_to_gui && data_read) {
+      startMillis = currentMillis;  //IMPORTANT to save the start time of the current LED state.
+      sendDataToGUI();
+    }
+  } 
 }
 
 /*
@@ -70,7 +97,22 @@ void processCommand() {
   DEBUG_PRINT("Received: ");
   DEBUG_PRINTLN(BT_command);
 
-  if (strcmp(BT_command, "W") == 0) {
+  // This will only be sent once, when the gui has sucessfully conencted => meaning data can be sent back
+  if (strcmp(BT_command, "CONN_OK") == 0) {
+    connected_to_gui = true;
+    data_read = true;
+    // Indicate with buzzer that gui is connected
+    tone(buzzerPin, 1000);
+    delay(500);
+    noTone(buzzerPin);
+
+    // Update timer
+    startMillis = millis();
+  } else if(strcmp(BT_command, "CONN_BREAK") == 0){
+    connected_to_gui = false;
+  }else if (strcmp(BT_command, "DATA_OK") == 0) { // if transmitted data was received
+    data_read = true;
+  } else if (strcmp(BT_command, "W") == 0) {
     DEBUG_PRINTLN("W found");
     leftSpeed = -abs(motorSpeed);
     rightSpeed = abs(motorSpeed);
@@ -82,7 +124,7 @@ void processCommand() {
   } else if (strcmp(BT_command, "A") == 0) {
     leftSpeed = abs(motorSpeed);
     rightSpeed = abs(motorSpeed);
-    
+
     encoder.clearEnc(BOTH);
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
@@ -90,7 +132,7 @@ void processCommand() {
   } else if (strcmp(BT_command, "D") == 0) {
     leftSpeed = -abs(motorSpeed);
     rightSpeed = -abs(motorSpeed);
-    
+
     encoder.clearEnc(BOTH);
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
@@ -132,7 +174,7 @@ void processCommand() {
     DEBUG_PRINTLN(" not found!");
   }
 
-//  DEBUG_PRINTLN("Command processed");
+  //  DEBUG_PRINTLN("Command processed");
   BT_command[0] = '\0';
   newCommand = false;
 
@@ -215,6 +257,7 @@ void recvWithStartEndMarkers()
 
   if (ASSserial.available() > 0)
   {
+    DEBUG_PRINTLN("Receiving data");
     rc = ASSserial.read();
     if (recvInProgress == true)
     {
@@ -239,3 +282,45 @@ void recvWithStartEndMarkers()
     }
   }
 }
+
+/*
+   Sends measurement data to the GUI over bluetooth
+ * */
+void sendDataToGUI() {
+  // Read raw data values from the accelerometer
+  int x;
+  int y;
+  int z;
+
+  // Update accelerometer values, average of predetermined amount of samples
+  for(int i = 0; i < average_constant; i++){
+    accel.read();
+    x += accel.x;
+    y += accel.y;
+    z += accel.z;
+    delay(1); // Small delay
+  }
+
+  x = x/average_constant;
+  y = y/average_constant;
+  z = z/average_constant;
+
+  DEBUG_PRINT("Sending data: ");
+  //String data = String(x) + String(y) + String(z);
+  DEBUG_PRINTLN(x);
+  String data = String(x) + " " + String(y) + " " + String(z);
+  DEBUG_PRINTLN(data);
+  char char_data[data.length()];
+  // Convert to char array, + 1 size for line-end char '\0'
+  data.toCharArray(char_data, data.length() + 1);
+  for (int i = 0; i < data.length(); i++) {
+    DEBUG_PRINTLN(i);
+    if (char_data[i] != 10 && char_data[i] != 13) {
+      DEBUG_PRINTLN(char_data[i]);
+      ASSserial.write(char_data[i]);
+    }
+  }
+
+  data_read = false;
+}
+
