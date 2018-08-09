@@ -2,9 +2,13 @@
    Controller using the encoder on the redbot to make it follow a straight line.
    Current status: Working Ok.
 */
+// Uncomment if debug should be used
+//#define DEBUG
 
 #include <RedBot.h>
 #include <AltSoftSerial.h>
+#include <Wire.h> // Must include Wire library for I2C
+#include <SparkFun_MMA8452Q.h> // Includes the SFE_MMA8452Q library
 
 //AltSoftSerial ASSserial;
 RedBotSoftwareSerial ASSserial;
@@ -17,7 +21,11 @@ bool connected_to_gui = false;
 bool data_read = true;
 
 RedBotMotors motors;
-RedBotAccel accel; // Accelerometer
+MMA8452Q accel; // Accelerometer
+float x_offset;
+float y_offset;
+float z_offset;
+
 RedBotEncoder encoder = RedBotEncoder(A2, 10);  // initializes encoder on pins A2 and 10
 String direction;
 
@@ -42,9 +50,6 @@ float Kp = 1; // P-controller parameter
 // Buzzer
 const int buzzerPin = 9;
 
-// Comment in if debug should be used
-//#define DEBUG
-
 #ifdef DEBUG
 #define DEBUG_PRINTLN(String) Serial.println(String)
 #define DEBUG_PRINT(String) Serial.print(String)
@@ -62,6 +67,10 @@ void setup(void)
   // INPUT_PULLUP defaults it to HIGH.
   pinMode(buzzerPin, OUTPUT);  // configures the buzzerPin as an OUTPUT
   startMillis = millis();
+
+  accel.init(SCALE_2G);  
+
+  calculateAccelOffset();
 }
 
 void loop(void)
@@ -78,16 +87,16 @@ void loop(void)
   }
 
   currentMillis = millis();  //get the current "time" (actually the number of milliseconds since the program started)
-  
+
   if (currentMillis - startMillis >= period)  //test whether the period has elapsed
   {
-    DEBUG_PRINTLN("Start transmission");
     // Only send data if gui has sent confirmation of connection
     if (connected_to_gui && data_read) {
+      DEBUG_PRINTLN("Start transmission");
       startMillis = currentMillis;  //IMPORTANT to save the start time of the current LED state.
       sendDataToGUI();
     }
-  } 
+  }
 }
 
 /*
@@ -108,9 +117,9 @@ void processCommand() {
 
     // Update timer
     startMillis = millis();
-  } else if(strcmp(BT_command, "CONN_BREAK") == 0){
+  } else if (strcmp(BT_command, "CONN_BREAK") == 0) {
     connected_to_gui = false;
-  }else if (strcmp(BT_command, "DATA_OK") == 0) { // if transmitted data was received
+  } else if (strcmp(BT_command, "DATA_OK") == 0) { // if transmitted data was received
     data_read = true;
   } else if (strcmp(BT_command, "W") == 0) {
     DEBUG_PRINTLN("W found");
@@ -288,39 +297,64 @@ void recvWithStartEndMarkers()
  * */
 void sendDataToGUI() {
   // Read raw data values from the accelerometer
-  int x;
-  int y;
-  int z;
+  float x;
+  float y;
+  float z;
 
   // Update accelerometer values, average of predetermined amount of samples
-  for(int i = 0; i < average_constant; i++){
-    accel.read();
-    x += accel.x;
-    y += accel.y;
-    z += accel.z;
-    delay(1); // Small delay
+  for (int i = 0; i < average_constant; i++) {
+      accel.read();
+      x += accel.cx;
+      y += accel.cy;
+      z += accel.cz;
+      delay(1); // Small delay
   }
 
-  x = x/average_constant;
-  y = y/average_constant;
-  z = z/average_constant;
+  x = x / average_constant - x_offset;
+  y = y / average_constant - y_offset;
+  z = z / average_constant - z_offset;
 
   DEBUG_PRINT("Sending data: ");
   //String data = String(x) + String(y) + String(z);
-  DEBUG_PRINTLN(x);
   String data = String(x) + " " + String(y) + " " + String(z);
   DEBUG_PRINTLN(data);
   char char_data[data.length()];
   // Convert to char array, + 1 size for line-end char '\0'
   data.toCharArray(char_data, data.length() + 1);
   for (int i = 0; i < data.length(); i++) {
-    DEBUG_PRINTLN(i);
+    //DEBUG_PRINTLN(i);
     if (char_data[i] != 10 && char_data[i] != 13) {
-      DEBUG_PRINTLN(char_data[i]);
+      //DEBUG_PRINTLN(char_data[i]);
       ASSserial.write(char_data[i]);
     }
   }
 
   data_read = false;
+}
+
+void calculateAccelOffset(){
+  int calc_constant = 1000;
+  x_offset = 0;
+  y_offset = 0;
+  z_offset = 0;
+  
+  for(int i = 0; i < calc_constant; i++){
+    accel.read();
+    x_offset += accel.cx;
+    y_offset += accel.cy;
+    z_offset += accel.cz;
+    delay(1);
+  }
+
+  x_offset = x_offset/calc_constant; // X is forward
+  y_offset = y_offset/calc_constant; // Y is left
+  z_offset = z_offset/calc_constant - 1; // Z is upward => 1 g 
+
+  DEBUG_PRINT("OFFSET: ");
+  DEBUG_PRINT(x_offset);
+  DEBUG_PRINT(" ");
+  DEBUG_PRINT(y_offset);
+  DEBUG_PRINT(" ");
+  DEBUG_PRINTLN(z_offset);
 }
 
