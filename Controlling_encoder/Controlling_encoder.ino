@@ -36,13 +36,25 @@ float leftSpeed = motorSpeed;
 // Timer variables
 unsigned long startMillis;  //some global variables available anywhere in the program
 unsigned long currentMillis;
-const unsigned long period = 2000; // Time between each consecutive transmission of data
+const unsigned long period = 1000; // Time between each consecutive transmission of data
 const unsigned long timeout = 30000; // Timeout for when the connection is assumed lost
 int average_constant = 10; // amount of samples used in the average
 
 float lCount; // number of rotations for each wheel
 float rCount;
 // not used atm: int countsPerRev = 192; // 4 pairs of N-S x 48:1 gearbox = 192 ticks per wheel rev
+const double wheelCirc = 0.205; // 20.5 cm circumference of wheel
+const double robotDiam = 0.155; // 15.5 cm between wheels
+const double countsPerRev = 192;
+
+double yaw = 0; // Yaw of the robot
+bool update_yaw = false;
+double yaw_direction = 1;
+bool update_pos = false;
+double x_pos = 0;
+double y_pos = 0;
+double distance = 0;
+
 
 bool regulator = true;
 float Kp = 1; // P-controller parameter
@@ -68,7 +80,7 @@ void setup(void)
   pinMode(buzzerPin, OUTPUT);  // configures the buzzerPin as an OUTPUT
   startMillis = millis();
 
-  accel.init(SCALE_2G);  
+  accel.init(SCALE_2G);
 
   calculateAccelOffset();
 }
@@ -94,7 +106,7 @@ void loop(void)
     if (connected_to_gui && data_read) {
       DEBUG_PRINTLN("Start transmission");
       startMillis = currentMillis;  //IMPORTANT to save the start time of the current LED state.
-      sendDataToGUI();
+      //sendDataToGUI();
     }
   }
 }
@@ -126,40 +138,78 @@ void processCommand() {
     leftSpeed = -abs(motorSpeed);
     rightSpeed = abs(motorSpeed);
 
-    encoder.clearEnc(BOTH);
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
+    if (direction == "backward") {
+      update_pos = true;
+    }else if (direction == "right") {
+      update_yaw = true;
+      yaw_direction = -1;
+    }else if (direction == "left") {
+      update_yaw = true;
+      yaw_direction = 1;
+    }
     direction = "forward";
   } else if (strcmp(BT_command, "A") == 0) {
     leftSpeed = abs(motorSpeed);
     rightSpeed = abs(motorSpeed);
 
-    encoder.clearEnc(BOTH);
+    motors.stop();
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
+    if (direction == "right") {
+      update_yaw = true;
+      yaw_direction = -1;
+    }else if (direction == "backward" || direction == "forward") {
+      update_pos = true;
+    }
     direction = "left";
   } else if (strcmp(BT_command, "D") == 0) {
     leftSpeed = -abs(motorSpeed);
     rightSpeed = -abs(motorSpeed);
 
-    encoder.clearEnc(BOTH);
+    motors.stop();
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
+    if (direction == "left") {
+      update_yaw = true;
+      yaw_direction = 1;
+    }else if (direction == "backward" || direction == "forward") {
+      update_pos = true;
+    }
     direction = "right";
   } else if (strcmp(BT_command, "S") == 0) {
     leftSpeed = abs(motorSpeed);
     rightSpeed = -abs(motorSpeed);
 
-    encoder.clearEnc(BOTH);
     motors.leftMotor(leftSpeed);
     motors.rightMotor(rightSpeed);
+    if (direction == "forward") {
+      update_pos = true;
+    }else if (direction == "right") {
+      update_yaw = true;
+      yaw_direction = -1;
+    }else if (direction == "left") {
+      update_yaw = true;
+      yaw_direction = 1;
+    }
     direction = "backward";
   } else if (strcmp(BT_command, "STOP") == 0) {
-    encoder.clearEnc(BOTH);
-    motors.coast();
-    direction = "still";
+    motors.stop();
     leftSpeed = motorSpeed;
     rightSpeed = motorSpeed;
+    if (direction == "forward" || direction == "backward") {
+      update_pos = true;
+    } else if (direction == "left" || direction == "right") {
+      update_yaw = true;
+      if (direction == "left") {
+        yaw_direction = 1;
+      } else {
+        yaw_direction = -1;
+      }
+    }
+    direction = "still";
+    DEBUG_PRINTLN("Stop");
   } else if (strcmp(BT_command, "reg") == 0) {
     if (regulator) {
       regulator = false;
@@ -194,6 +244,48 @@ void processCommand() {
     Regulator, if moving foward or backward make sure to follow the right angle around z-axis
 */
 void controller() {
+  if (update_pos) {
+    // Update the estimated traveled distance
+    DEBUG_PRINT("lCount: ");
+    DEBUG_PRINT(lCount);
+    DEBUG_PRINT(", rCount: ");
+    DEBUG_PRINT(rCount);
+    distance = 0.5 * wheelCirc * (rCount + lCount) / countsPerRev;
+    DEBUG_PRINT(", Distance: ");
+    DEBUG_PRINTLN(distance);
+    if (direction == "backward") {
+      distance = -1 * distance;
+    }
+
+      // Update the estimated x and y position
+    x_pos += distance * cos(yaw);
+    y_pos += distance * sin(yaw);
+    DEBUG_PRINT("(x, y): ");
+    DEBUG_PRINT(x_pos);
+    DEBUG_PRINT(", ");
+    DEBUG_PRINTLN(y_pos);
+    update_pos = false;
+    distance = 0;
+    encoder.clearEnc(BOTH);
+  }
+
+  if (update_yaw) {
+    lCount = abs(encoder.getTicks(LEFT));    // read the left motor encoder
+    rCount = abs(encoder.getTicks(RIGHT));   // read the right motor encoder
+    DEBUG_PRINT("lCount: ");
+    DEBUG_PRINT(lCount);
+    DEBUG_PRINT(", rCount: ");
+    DEBUG_PRINT(rCount);
+
+    // Update the yaw angle
+    yaw += yaw_direction * 0.5 * wheelCirc / (robotDiam / 2) * (lCount + rCount) / countsPerRev;
+
+    DEBUG_PRINT(", Yaw: ");
+    DEBUG_PRINTLN(yaw);
+    encoder.clearEnc(BOTH);
+    update_yaw = false;
+  }
+
   if (direction == "forward" || direction == "backward") {
     // We want the robot move forwards => encoder value from left wheel = value from right wheel
     // i.e. reference value of 0
@@ -204,6 +296,7 @@ void controller() {
     DEBUG_PRINTLN(lCount);
     DEBUG_PRINT("rCount: ");
     DEBUG_PRINTLN(rCount);
+
     float error = lCount - rCount;
 
     DEBUG_PRINT("Error: ");
@@ -303,11 +396,11 @@ void sendDataToGUI() {
 
   // Update accelerometer values, average of predetermined amount of samples
   for (int i = 0; i < average_constant; i++) {
-      accel.read();
-      x += accel.cx;
-      y += accel.cy;
-      z += accel.cz;
-      delay(1); // Small delay
+    accel.read();
+    x += accel.cx;
+    y += accel.cy;
+    z += accel.cz;
+    delay(1); // Small delay
   }
 
   x = x / average_constant - x_offset;
@@ -332,13 +425,13 @@ void sendDataToGUI() {
   data_read = false;
 }
 
-void calculateAccelOffset(){
+void calculateAccelOffset() {
   int calc_constant = 1000;
   x_offset = 0;
   y_offset = 0;
   z_offset = 0;
-  
-  for(int i = 0; i < calc_constant; i++){
+
+  for (int i = 0; i < calc_constant; i++) {
     accel.read();
     x_offset += accel.cx;
     y_offset += accel.cy;
@@ -346,9 +439,9 @@ void calculateAccelOffset(){
     delay(1);
   }
 
-  x_offset = x_offset/calc_constant; // X is forward
-  y_offset = y_offset/calc_constant; // Y is left
-  z_offset = z_offset/calc_constant - 1; // Z is upward => 1 g 
+  x_offset = x_offset / calc_constant; // X is forward
+  y_offset = y_offset / calc_constant; // Y is left
+  z_offset = z_offset / calc_constant - 1; // Z is upward => 1 g
 
   DEBUG_PRINT("OFFSET: ");
   DEBUG_PRINT(x_offset);
